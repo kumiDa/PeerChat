@@ -1,0 +1,204 @@
+/*
+ * To change this license header, choose License Headers in Project Properties.
+ * To change this template file, choose Tools | Templates
+ * and open the template in the editor.
+ */
+package Server
+
+/**
+ *
+ * @author rakshith
+ */
+/*
+ * To change this license header, choose License Headers in Project Properties.
+ * To change this template file, choose Tools | Templates
+ * and open the template in the editor.
+ */
+
+
+/**
+ *
+ * @author rakshith
+ */
+import java.net.*;
+import java.io.*;
+import java.util.*;
+import java.nio.channels.*;
+import java.nio.*;
+import java.util.concurrent.*;
+class Server
+{
+	ArrayList<Socket> clientArray;
+	ConcurrentLinkedQueue<String> msgQueue; //Thread-safe Queue
+	Selector selector; //For asynchronoous I/O
+	public static void main(String args[])throws IOException
+	{
+		Server serve = new Server();
+		
+	}
+
+	public Server()throws IOException
+	{
+		clientArray=new ArrayList<Socket>();
+		msgQueue= new ConcurrentLinkedQueue<String>();
+		selector = Selector.open();
+		Thread t1 = new Thread(){
+			public void run()
+			{
+				try{
+					receiveMessages();
+				}
+				catch(Exception e){}
+			}
+		};
+		Thread t2 = new Thread(){
+			public void run()
+			{
+				try
+				{
+					broadcast();
+				}
+				catch(Exception e){}
+			}
+		};
+		/**
+		*We use 2 threads here. One for broadcasting the messages
+		*The other to accept connections and read data from the client sockets
+		*/
+		t1.start(); 
+		t2.start();
+	}
+	public void receiveMessages()
+	{
+		System.out.println("Server started");
+		ServerSocketChannel ssc;
+		ServerSocket sock=null;
+		try
+		{
+			ssc = ServerSocketChannel.open();
+			ssc.configureBlocking(false); //Asynchronous I/O
+			sock = ssc.socket();
+     		InetSocketAddress isa = new InetSocketAddress(5555);
+      		sock.bind(isa);
+      		ssc.register(selector,SelectionKey.OP_ACCEPT); //Register the socket channel with the selector to accept connections
+		}
+		catch(Exception e)
+		{
+			e.printStackTrace();
+		}
+		while(true)
+		{
+			try
+			{
+				int num=selector.select(); //Select a key from the registered socket channels
+				if(num==0)
+					continue;
+				Set keys = selector.selectedKeys();
+				Iterator it = keys.iterator();
+				while(it.hasNext())
+				{
+					SelectionKey key = (SelectionKey)it.next();
+					if((key.readyOps() & SelectionKey.OP_ACCEPT) == SelectionKey.OP_ACCEPT)
+					{
+						Socket client = sock.accept();
+						synchronized(clientArray)
+						{
+							clientArray.add(client); //Add the client to an array list so that 
+													 //broadcast function can make use of it while 
+													 //sending data on this socket
+
+						}
+						SocketChannel sc = client.getChannel();
+						sc.configureBlocking(false);
+						sc.register(selector,SelectionKey.OP_READ); //Register this socket channel to read data from the socket
+						System.out.println("New client: "+client.getRemoteSocketAddress().toString());
+						System.out.println("Client Array size is "+clientArray);
+					}
+					if((key.readyOps() & SelectionKey.OP_READ) == SelectionKey.OP_READ)
+					{
+						SocketChannel sc=null;
+						try
+						{
+
+							sc=(SocketChannel)key.channel();
+							Socket client=sc.socket();
+							ByteBuffer buff = ByteBuffer.allocate(1024);
+							int status=sc.read(buff);
+							if(status==-1) //If status is -1, it means the connection has been terminated on the remote end
+							{
+								synchronized(clientArray)
+								{
+									clientArray.remove(client); //Safely remove the client from the array list
+								}
+								sc.close();
+								System.out.println("Client array size is "+clientArray.size());
+								continue;
+							}
+							String message=new String(buff.array(),java.nio.charset.StandardCharsets.UTF_8);
+							message=message.substring(0,message.length()-1);
+							msgQueue.add(message);
+						}
+						catch(IOException e)
+						{
+							e.printStackTrace();
+							key.cancel();
+							try
+							{
+								sc.close();
+							}
+							catch(IOException e2)
+							{
+								System.err.println("Error closing the socketchannel "+e2);
+							}
+							System.err.println("Exception occurred");
+						}
+					}
+				}
+				keys.clear();
+			}
+			catch(IOException e)
+			{
+				e.printStackTrace();
+			}
+		}
+
+	}
+	public void broadcast()
+	{
+		System.out.println("Broadcast started");
+		while(true)
+		{
+			String message=null;
+			if(!msgQueue.isEmpty())
+			{
+				message=msgQueue.poll(); //Retrieve the next message remaining in the queue
+			}
+			if(clientArray.size()!=0)
+			{
+				synchronized(clientArray)
+				{
+					for(Socket sock : clientArray)
+					{
+						try
+						{
+							SocketChannel sc = sock.getChannel();
+							ByteBuffer buff = ByteBuffer.allocate(1024);
+							if(message!=null)
+							{
+								byte[] byteBuff=message.getBytes("UTF-8");
+								buff.clear();
+								buff.put(byteBuff);
+								buff.flip();
+								sc.write(buff);
+							}
+						}
+						catch(IOException e){}
+					}
+				}
+			}
+		}
+	}
+}
+
+    
+
